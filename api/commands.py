@@ -1,17 +1,20 @@
 import datetime
-import json
 import random
 import string
 
 import click
+from flask import current_app
 
 from libs.password import password_pattern, valid_password, hash_password
 from libs.helper import email as email_validate
 from extensions.ext_database import db
-from models.account import InvitationCode
-from models.model import Account, AppModelConfig, ApiToken, Site, App, RecommendedApp
+from libs.rsa import generate_key_pair
+from models.account import InvitationCode, Tenant
+from models.model import Account
 import secrets
 import base64
+
+from models.provider import Provider
 
 
 @click.command('reset-password', help='Reset the account password.')
@@ -74,6 +77,31 @@ def reset_email(email, new_email, email_confirm):
     click.echo(click.style('Congratulations!, email has been reset.', fg='green'))
 
 
+@click.command('reset-encrypt-key-pair', help='Reset the asymmetric key pair of workspace for encrypt LLM credentials. '
+                                              'After the reset, all LLM credentials will become invalid, '
+                                              'requiring re-entry.'
+                                              'Only support SELF_HOSTED mode.')
+@click.confirmation_option(prompt=click.style('Are you sure you want to reset encrypt key pair?'
+                                              ' this operation cannot be rolled back!', fg='red'))
+def reset_encrypt_key_pair():
+    if current_app.config['EDITION'] != 'SELF_HOSTED':
+        click.echo(click.style('Sorry, only support SELF_HOSTED mode.', fg='red'))
+        return
+
+    tenant = db.session.query(Tenant).first()
+    if not tenant:
+        click.echo(click.style('Sorry, no workspace found. Please enter /install to initialize.', fg='red'))
+        return
+
+    tenant.encrypt_public_key = generate_key_pair(tenant.id)
+
+    db.session.query(Provider).filter(Provider.provider_type == 'custom').delete()
+    db.session.commit()
+
+    click.echo(click.style('Congratulations! '
+                           'the asymmetric key pair of workspace {} has been reset.'.format(tenant.id), fg='green'))
+
+
 @click.command('generate-invitation-codes', help='Generate invitation codes.')
 @click.option('--batch', help='The batch of invitation codes.')
 @click.option('--count', prompt=True, help='Invitation codes count.')
@@ -131,30 +159,8 @@ def generate_upper_string():
     return result
 
 
-@click.command('gen-recommended-apps', help='Number of records to generate')
-def generate_recommended_apps():
-    print('Generating recommended app data...')
-    apps = App.query.all()
-    for app in apps:
-        recommended_app = RecommendedApp(
-            app_id=app.id,
-            description={
-                'en': 'Description for ' + app.name,
-                'zh': '描述 ' + app.name
-            },
-            copyright='Copyright ' + str(random.randint(1990, 2020)),
-            privacy_policy='https://privacypolicy.example.com',
-            category=random.choice(['Games', 'News', 'Music', 'Sports']),
-            position=random.randint(1, 100),
-            install_count=random.randint(100, 100000)
-        )
-        db.session.add(recommended_app)
-    db.session.commit()
-    print('Done!')
-
-
 def register_commands(app):
     app.cli.add_command(reset_password)
     app.cli.add_command(reset_email)
     app.cli.add_command(generate_invitation_codes)
-    app.cli.add_command(generate_recommended_apps)
+    app.cli.add_command(reset_encrypt_key_pair)
